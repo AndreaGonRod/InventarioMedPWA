@@ -38,6 +38,48 @@ function initTabs() {
   });
 }
 
+function parseGS1(code) {
+  let result = { raw: code, gtin: code, lot: code, exp: null };
+  let cleanCode = code.replace(/\x1D/g, '|');
+  
+  if (cleanCode.startsWith('01') && cleanCode.length >= 16) {
+    result.gtin = cleanCode.substring(2, 16);
+    let remaining = cleanCode.substring(16);
+    
+    while (remaining.length > 0) {
+      if (remaining.startsWith('17') && remaining.length >= 8) {
+        let expStr = remaining.substring(2, 8);
+        let year = parseInt(expStr.substring(0, 2)) + 2000;
+        let month = expStr.substring(2, 4);
+        let day = expStr.substring(4, 6);
+        if (day === '00') day = '28'; 
+        result.exp = `${year}-${month}-${day}`;
+        remaining = remaining.substring(8);
+      } else if (remaining.startsWith('10')) {
+        let sepIdx = remaining.indexOf('|');
+        if (sepIdx !== -1) {
+          result.lot = remaining.substring(2, sepIdx);
+          remaining = remaining.substring(sepIdx + 1);
+        } else {
+          result.lot = remaining.substring(2);
+          remaining = "";
+        }
+      } else if (remaining.startsWith('21')) {
+        let sepIdx = remaining.indexOf('|');
+        if (sepIdx !== -1) {
+          remaining = remaining.substring(sepIdx + 1);
+        } else {
+          remaining = "";
+        }
+      } else {
+        break; // Unsupported AI, stop parsing to prevent infinite loop
+      }
+    }
+  }
+  
+  return result;
+}
+
 function initMovementActions() {
   const modal = document.getElementById('movement-modal');
 
@@ -53,6 +95,8 @@ function initMovementActions() {
       const code = await barcodeScanner.startScan();
       if (!code) return;
 
+      const parsed = parseGS1(code);
+
       ui.state.isEntry = true;
       ui.state.selectedBatchId = null;
 
@@ -60,11 +104,14 @@ function initMovementActions() {
       await ui.renderForm();
 
       const batchInput = document.getElementById('input-batch-number');
-      if (batchInput) batchInput.value = code;
+      const expInput = document.getElementById('input-expiration');
+      
+      if (batchInput) batchInput.value = parsed.lot;
+      if (expInput && parsed.exp) expInput.value = parsed.exp;
 
-      ui.showToast(`Código escaneado: ${code}. Buscando datos...`, true);
+      ui.showToast(`Código escaneado: ${parsed.gtin}. Buscando datos...`, true);
 
-      const productData = await lookupBarcode(code);
+      const productData = await lookupBarcode(parsed.gtin);
 
       if (productData && productData.name) {
         const nameInput = document.getElementById('input-name');
