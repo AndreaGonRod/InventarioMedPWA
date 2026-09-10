@@ -15,6 +15,50 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
+function parseBarcodeData(code) {
+  const result = { isGS1: false, gtin: null, exp: null, lot: null, raw: code };
+  
+  const normalizedCode = code.replace(/\x1D/g, '|');
+  
+  if (!code.startsWith('01') && !code.includes('01') && !code.includes('17') && !code.includes('10')) {
+      return result;
+  }
+  
+  const gtinMatch = normalizedCode.match(/01(\d{14})/);
+  if (gtinMatch) result.gtin = gtinMatch[1];
+  
+  const expMatch = normalizedCode.match(/17(\d{6})/);
+  if (expMatch) {
+    const expRaw = expMatch[1];
+    const year = '20' + expRaw.substring(0, 2);
+    const month = expRaw.substring(2, 4);
+    let day = expRaw.substring(4, 6);
+    if (day === '00') day = '28'; 
+    result.exp = `${year}-${month}-${day}`;
+  }
+  
+  const lotMatch = normalizedCode.match(/10([^|]+)/);
+  if (lotMatch) {
+    let rawLot = lotMatch[1];
+    if (!normalizedCode.includes('|') && expMatch && rawLot.includes('17' + expMatch[1])) {
+       rawLot = rawLot.substring(0, rawLot.indexOf('17' + expMatch[1]));
+    }
+    if (!normalizedCode.includes('|') && rawLot.includes('21') && rawLot.length > 8) {
+       let possible21 = rawLot.lastIndexOf('21');
+       if (possible21 > 3) {
+           rawLot = rawLot.substring(0, possible21);
+       }
+    }
+    result.lot = rawLot;
+  }
+  
+  if (result.gtin || result.exp || result.lot) {
+      result.isGS1 = true;
+  }
+  
+  return result;
+}
+
 function initTabs() {
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabPanels = document.querySelectorAll('.tab-panel');
@@ -50,8 +94,10 @@ function initMovementActions() {
   const fabScan = document.getElementById('fab-scan');
   if (fabScan) {
     fabScan.addEventListener('click', async () => {
-      const code = await barcodeScanner.startScan();
-      if (!code) return;
+      const rawCode = await barcodeScanner.startScan();
+      if (!rawCode) return;
+
+      const parsed = parseBarcodeData(rawCode);
 
       ui.state.isEntry = true;
       ui.state.selectedBatchId = null;
@@ -60,11 +106,18 @@ function initMovementActions() {
       await ui.renderForm();
 
       const batchInput = document.getElementById('input-batch-number');
-      if (batchInput) batchInput.value = code;
+      const expInput = document.getElementById('input-expiration');
+      
+      if (parsed.isGS1) {
+        if (batchInput && parsed.lot) batchInput.value = parsed.lot;
+        if (expInput && parsed.exp) expInput.value = parsed.exp;
+        ui.showToast(`Código detectado. Buscando medicamento...`, true);
+      } else {
+        ui.showToast(`Buscando código: ${rawCode}...`, true);
+      }
 
-      ui.showToast(`Código escaneado: ${code}. Buscando datos...`, true);
-
-      const productData = await lookupBarcode(code);
+      const lookupCode = parsed.isGS1 ? (parsed.gtin || parsed.raw) : parsed.raw;
+      const productData = await lookupBarcode(lookupCode);
 
       if (productData && productData.name) {
         const nameInput = document.getElementById('input-name');
@@ -79,7 +132,12 @@ function initMovementActions() {
 
         ui.showToast(`Datos encontrados: ${productData.name}`, true);
       } else {
-        ui.showToast(`No se encontraron datos. Código: ${code} aplicado como lote.`, false);
+        if (parsed.isGS1) {
+           ui.showToast(`Rellena el nombre manualmente. Lote y caducidad autocompletados.`, false);
+        } else {
+           if (batchInput) batchInput.value = rawCode;
+           ui.showToast(`No se encontraron datos. Código aplicado como lote.`, false);
+        }
       }
     });
   }
